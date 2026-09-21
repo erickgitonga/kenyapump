@@ -1,0 +1,16 @@
+.env
+.env.local
+*.log
+*.db
+*.sqlite3
+data/*.db
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+test_*.py
+debug_*.py
+diag*.py
+probe_*.py
+.vscode/
+.idea/
