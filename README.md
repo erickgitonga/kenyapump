@@ -1,89 +1,108 @@
-# Multi-Chain Memecoin Bot — Module 1: Chain Abstraction Layer
+# KenyaPump — Multi-Chain Memecoin Detection System
 
-## What's here
+A modular, async-first infrastructure for detecting and filtering newly
+launched memecoins across Ethereum and Base. Real-time detection via
+Alchemy WebSocket, two-layer adversarial screening, and phone alerts for
+high-signal events.
 
-```
+**Status:** detection, screening, and alerting layers are functional and
+running 24/7 against live data. Execution and risk management are not yet
+built — see [Roadmap](#roadmap).
+
+---
+
+## What this does today
+
+- **Real-time detection** of new DEX pools on Ethereum and Base via
+  Alchemy WebSocket — Uniswap V2, Uniswap V3, and Aerodrome Slipstream
+  factories. ~7ms from chain event to log line.
+- **Enrichment** with live price/liquidity from DexScreener, with a
+  20-minute adaptive retry window for pairs not yet indexed.
+- **Two-layer adversarial screening:**
+  - Layer 1: `QuickScreen` — reads the first 60 seconds of `Transfer`
+    events directly from chain. Detects bundle launches, deployer
+    concentration, and thin holder bases in 2-3 seconds.
+  - Layer 2: `HoneypotDetector` — combines GoPlus Security's free API
+    with holder concentration data for a 0-100 risk score.
+- **Deep holder analysis** (`data/holders.py`) — full historical
+  `Transfer` scan for tokens that survive the quick screen, using
+  parallel chunked `eth_getLogs` calls within Alchemy free-tier limits.
+- **Telegram alerts** — phone notifications for `[PASS]` and `[DANGER]`
+  verdicts only. `[REJECT]` and `[WATCH]` stay in logs.
+- **Watchdog** (`watchdog.py`) — monitors the bot process, restarts on
+  crash, sends Telegram alert on state change.
+- **Persistent state** in SQLite — survives restarts without re-processing.
+
+None of this executes trades. `BOT_DRY_RUN=true` by default, and nothing
+in this codebase currently calls the transaction-signing path.
+
+---
+
+## Key finding
+
+Over a 24-hour live sample of Base Uniswap V2 launches, **every qualified
+token showed 3-6 holders with 82-99% concentration in the first 60
+seconds.** Zero showed distributed holder bases. This pattern is
+consistent with machine-operated adversarial launches dominating the
+cheap-factory venue.
+
+The `QuickScreen` filter catches this in 2-3 seconds — before DexScreener
+or GoPlus have indexed the pair — by reading chain state directly.
+
+---
+
+## Architecture (updated)
+
 core/
-  models.py           # Chain-agnostic data classes (TokenInfo, SwapQuote, GasEstimate, ...)
-  exceptions.py        # Exception hierarchy (retryable vs. fatal vs. risk-policy)
-  chain_interface.py   # BaseChainAdapter — the contract every chain must implement
-  chain_router.py       # Registry across adapters; where "auto-switch chains" will live
+  models.py            Chain-agnostic data classes
+  exceptions.py         Retryable vs. fatal vs. risk-policy errors
+  chain_interface.py    BaseChainAdapter — contract every adapter implements
+  chain_router.py        Registry across chain adapters
+
 chains/
-  ethereum.py           # EthereumAdapter(BaseChainAdapter) using web3.py
+  ethereum.py            EthereumAdapter(BaseChainAdapter) — web3.py-based
+  base.py                 BaseAdapter(EthereumAdapter) — inherits EVM logic,
+                          overrides chain identity and factory addresses
+
 config/
-  settings.py           # Env-driven config (RPC endpoints, risk defaults, dry-run flag)
-utils/
-  rpc_pool.py           # Multi-endpoint failover/circuit-breaker for RPC calls
-```
+  settings.py             Env-driven config for every module below
 
-## Design decisions worth knowing before you build on top of this
+data/
+  dexscreener.py           Free client: pool discovery, price, liquidity
+  geckoterminal.py          Free client: OHLCV candle history
+  holders.py                 On-chain holder concentration from raw Transfer events
+  scraper.py                  TokenScraper — chain-aware WebSocket detection,
+                              adaptive chunking around Alchemy's 10-block limit
+  persistence.py               SQLite scan state + discovered-pair history
 
-1. **Everything is async.** A trading bot spends most of its time waiting on
-   RPC calls; sync code here would serialize work that should run concurrently
-   (watching multiple pairs, polling multiple chains).
+ai/
+  quick_screen.py          Layer 1: 2-second adversarial launch filter
+  honeypot.py               Layer 2: GoPlus + holder concentration risk score
 
-2. **`BaseChainAdapter` is the only thing upstream code should depend on.**
-   Risk management, strategy, and execution scheduling should never import
-   `web3` or any chain SDK directly — only `core.chain_interface`. That's what
-   makes adding Base/Solana/Arbitrum later a matter of writing one new file,
-   not touching everything else.
+notifications/
+  telegram.py               Async Telegram alerting (fire-and-forget sink)
 
-3. **`get_liquidity_info` is intentionally `NotImplementedError`.** Real pool
-   discovery and USD pricing need an indexer (Dexscreener, The Graph, or your
-   own) — scanning factory events live over RPC is too slow to trade on.
-   Wire it as an injected dependency rather than faking numbers.
+watchdog.py                 Process monitor + auto-restart + death alerts
+main.py                     Wires everything together
 
-4. **`simulate_sell` is a first-pass filter, not a honeypot scanner.** It
-   checks whether a router quote round-trips without reverting. For real
-   protection you want a dedicated service (Honeypot.is, GoPlus Security) in
-   the risk-management module — treat this as "catches the obvious cases
-   fast," not "guarantees safety."
+---
 
-5. **`BOT_DRY_RUN=true` by default.** `sign_and_send_transaction` still signs
-   and broadcasts if called — dry-run enforcement belongs in the execution
-   engine (the module after risk management), which should check this flag
-   before ever calling `sign_and_send_transaction`.
+## Roadmap (updated)
 
-6. **Private keys never touch disk or logs in this code.** Source them from a
-   secrets manager at runtime; `.env.example` documents this but the actual
-   key handling is your responsibility at the deployment layer.
+Built:
+- [x] Chain abstraction layer (Ethereum + Base)
+- [x] Free live data layer (DexScreener, GeckoTerminal)
+- [x] New-pair detection (polling + WebSocket, with reconnection/backoff)
+- [x] Two-layer adversarial screening (quick screen + honeypot)
+- [x] On-chain holder concentration analysis
+- [x] Persistent state across restarts
+- [x] Telegram alerting
+- [x] Process watchdog with auto-restart
 
-## Setup
-
-```bash
-pip install -r requirements.txt
-cp .env.example .env   # fill in real RPC URLs
-```
-
-```python
-import asyncio
-from config.settings import BotConfig
-from chains.ethereum import EthereumAdapter
-from core.chain_router import ChainRouter
-
-async def main():
-    config = BotConfig.from_env()
-    eth = EthereumAdapter(config.ethereum)
-
-    router = ChainRouter()
-    router.register(eth)
-    await router.connect_all()
-
-    health = await router.health_check_all()
-    print(health)
-
-asyncio.run(main())
-```
-
-## What's NOT here yet (per your roadmap)
-
-- Additional chain adapters (Base, Solana, Arbitrum, BSC)
-- Opportunity scoring / `ChainRouter.best_chain_for()`
-- Risk management engine (position sizing, exposure limits, kill switches)
-- Real-time analysis / signal generation
-- Execution engine (order scheduling, MEV protection, retry policy)
-- Liquidity indexer integration
-- Honeypot/contract-safety scanning service integration
-
-Send over the next module spec and I'll build it against this same
-`BaseChainAdapter` contract.
+Not yet built:
+- [ ] Outcome tracker — re-scan detected tokens at T+6h / T+24h
+- [ ] Reputation DB — persistent adversarial memory across launches
+- [ ] Funding graph — trace deployer funding chains
+- [ ] Solana adapter — where 85% of memecoin volume is
+- [ ] Risk management engine (position sizing, exposure limits)
+- [ ] Execution engine (order scheduling, MEV protection)
