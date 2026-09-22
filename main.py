@@ -148,6 +148,27 @@ async def main():
                                 log.debug(f"reputation record failed: {e}")
                         continue  # skip honeypot + deep analysis
                     elif qv.verdict == "WATCH":
+                        # Wallet tracker integration for WATCH
+                        try:
+                            from data.wallet_tracker import get_top_holders
+                            holders = await get_top_holders(
+                                adapter=qs._eth,
+                                token_address=t.address,
+                                launch_block=launch_block,
+                                top_n=5,
+                            )
+                            for h in holders:
+                                await reputation.record_edge(
+                                    wallet_address=h.wallet,
+                                    token_address=t.address,
+                                    token_symbol=t.symbol,
+                                    chain=chain_label,
+                                    role="top_holder",
+                                    block_number=launch_block,
+                                )
+                        except Exception as e:
+                            log.warning(f"Wallet tracker failed for {t.symbol}: {e}")
+
                         log.warning(
                             f"[WATCH] QUICK WATCH [{chain_label}]: {base_msg} | "
                             f"holders={qv.unique_receivers} "
@@ -165,8 +186,6 @@ async def main():
                                 )
                             except Exception as e:
                                 log.debug(f"reputation record failed: {e}")
-                        # Send WATCH alerts too — since PASS never fires,
-                        # these are the only signals you'll see
                         await notifier.send(
                             f"<b>⚠️ WATCH</b> [{chain_label}] <code>{t.symbol}</code>\n"
                             f"Liq: ${t.metadata.get('liquidity_usd', '?')}\n"
@@ -175,6 +194,27 @@ async def main():
                             f"<i>{qv.reason}</i>"
                         )
                     else:
+                        # Wallet tracker integration for PASS
+                        try:
+                            from data.wallet_tracker import get_top_holders
+                            holders = await get_top_holders(
+                                adapter=qs._eth,
+                                token_address=t.address,
+                                launch_block=launch_block,
+                                top_n=5,
+                            )
+                            for h in holders:
+                                await reputation.record_edge(
+                                    wallet_address=h.wallet,
+                                    token_address=t.address,
+                                    token_symbol=t.symbol,
+                                    chain=chain_label,
+                                    role="top_holder",
+                                    block_number=launch_block,
+                                )
+                        except Exception as e:
+                            log.warning(f"Wallet tracker failed for {t.symbol}: {e}")
+
                         log.info(
                             f"[PASS] QUICK PASS [{chain_label}]: {base_msg} | "
                             f"({qv.latency_ms:.0f}ms) {qv.reason}"
@@ -190,6 +230,9 @@ async def main():
                             top_pct=float(qv.largest_receiver_pct or 0),
                             reason=qv.reason,
                         )
+                else:
+                    # launch_block == 0, skip quick screen and wallet tracker
+                    pass
             except Exception as exc:
                 log.debug(f"quick_screen failed for {t.symbol}: {exc}")
 
@@ -233,7 +276,6 @@ async def main():
     # ─────────────────────────────────────────────
     scraper_tasks = []
 
-    # Ethereum scraper
     # Ethereum scraper
     if config.scraper.mode == "websocket" and config.ethereum.ws_endpoint:
         log.info("Starting Ethereum scraper (WebSocket mode)")
