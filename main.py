@@ -15,6 +15,7 @@ from data.scraper import TokenScraper
 from ai.honeypot import GoPlusClient, HoneypotDetector
 from ai.quick_screen import QuickScreen
 from notifications.telegram import TelegramNotifier
+from intelligence.reputation import ReputationStore
 from chains.base import BaseAdapter
 from config.settings import BotConfig
 
@@ -101,6 +102,7 @@ async def main():
     goplus = GoPlusClient()
     honeypot_detector = HoneypotDetector(goplus)
     notifier = TelegramNotifier()
+    reputation = ReputationStore()
     # QuickScreen needs the chain adapter — build one per chain on demand
     _quick_screens = {}
 
@@ -131,12 +133,46 @@ async def main():
                             f"[REJECT] QUICK REJECT [{chain_label}]: {base_msg} | "
                             f"({qv.latency_ms:.0f}ms) {qv.reason}"
                         )
+                        # Record even rejected tokens — the deployer is the signal
+                        if qv.deployer_address:
+                            try:
+                                await reputation.record_edge(
+                                    wallet_address=qv.deployer_address,
+                                    token_address=t.address,
+                                    token_symbol=t.symbol,
+                                    chain=chain_label,
+                                    role="deployer",
+                                    block_number=launch_block,
+                                )
+                            except Exception as e:
+                                log.debug(f"reputation record failed: {e}")
                         continue  # skip honeypot + deep analysis
                     elif qv.verdict == "WATCH":
                         log.warning(
                             f"[WATCH] QUICK WATCH [{chain_label}]: {base_msg} | "
                             f"holders={qv.unique_receivers} "
                             f"largest={qv.largest_receiver_pct:.1%} | {qv.reason}"
+                        )
+                        if qv.deployer_address:
+                            try:
+                                await reputation.record_edge(
+                                    wallet_address=qv.deployer_address,
+                                    token_address=t.address,
+                                    token_symbol=t.symbol,
+                                    chain=chain_label,
+                                    role="deployer",
+                                    block_number=launch_block,
+                                )
+                            except Exception as e:
+                                log.debug(f"reputation record failed: {e}")
+                        # Send WATCH alerts too — since PASS never fires,
+                        # these are the only signals you'll see
+                        await notifier.send(
+                            f"<b>⚠️ WATCH</b> [{chain_label}] <code>{t.symbol}</code>\n"
+                            f"Liq: ${t.metadata.get('liquidity_usd', '?')}\n"
+                            f"Holders: {qv.unique_receivers}\n"
+                            f"Top: {qv.largest_receiver_pct:.1%}\n"
+                            f"<i>{qv.reason}</i>"
                         )
                     else:
                         log.info(
@@ -264,6 +300,7 @@ async def main():
                 await task
             except asyncio.CancelledError:
                 pass
+        await reputation.close()
         await notifier.close()
         await goplus.close()
         await dexscreener.close()
