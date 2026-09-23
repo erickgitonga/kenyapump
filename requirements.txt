@@ -1,5 +1,5 @@
 # Core
-web3>=6.15,<7.0
+web3>=7.0
 aiohttp
 python-dotenv
 

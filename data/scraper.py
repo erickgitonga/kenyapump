@@ -293,7 +293,7 @@ class TokenScraper:
         level) so the polling path (run_forever) keeps working even in
         environments/web3 versions where the WS provider name differs.
         """
-        from web3 import AsyncWeb3, Web3, WebsocketProviderV2
+        from web3 import AsyncWeb3, Web3, WebSocketProvider
 
         log.info(
             "TokenScraper starting in WebSocket mode (v2=%s, v3=%s)",
@@ -313,7 +313,7 @@ class TokenScraper:
         retry_task = asyncio.create_task(retry_loop())
 
         try:
-            async with AsyncWeb3.persistent_websocket(WebsocketProviderV2(ws_url)) as w3:
+            async with AsyncWeb3(WebSocketProvider(ws_url)) as w3:
                 chain_key = self._eth.chain_id.value
                 factories = FACTORIES_BY_CHAIN.get(chain_key, [])
                 log.info(
@@ -335,11 +335,11 @@ class TokenScraper:
                     subs[sub_id] = dex_label
                 log.info("Subscribed to %d factory event stream(s)", len(subs))
 
-                async for message in w3.ws.process_subscriptions():
+                async for message in w3.socket.process_subscriptions():
                     if self._stopped:
                         break
 
-                    # WebsocketProviderV2.process_subscriptions() yields
+                    # WebSocketProvider.process_subscriptions() yields
                     # ALREADY-UNWRAPPED payloads - no "params" envelope:
                     #   {'subscription': '<sub_id>', 'result': {...log...}}
                     sub_id = message.get("subscription")
