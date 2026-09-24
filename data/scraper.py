@@ -97,6 +97,7 @@ class _PendingCandidate:
     dex: str
     quote_symbol: str
     block_number: int
+    deployer: Optional[str] = None
     attempts: int = 0
 
 
@@ -110,6 +111,7 @@ class NewPairEvent:
     dex: str
     quote_symbol: str
     block_number: int
+    deployer: Optional[str] = None
 
 
 class TokenScraper:

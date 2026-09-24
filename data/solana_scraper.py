@@ -87,6 +87,7 @@ class SolanaTokenScraper:
                     ping_task = asyncio.create_task(self._keepalive(websocket))
 
                     async for message in websocket:
+                        logger.info("RAW WS: %s", str(message)[:200])
                         if self._stopped:
                             break
 
@@ -132,8 +133,7 @@ class SolanaTokenScraper:
             "method": "logsSubscribe",
             "params": [
                 {
-                    "all": True,
-                    "programId": PUMP_FUN_PROGRAM_ID,
+                    "mentions": [PUMP_FUN_PROGRAM_ID],
                 },
                 {
                     "commitment": "confirmed",
@@ -161,72 +161,85 @@ class SolanaTokenScraper:
             return
 
     async def _process_message(self, message: Any) -> List[NewPairEvent]:
+        # websockets delivers text frames as `str` — parse JSON first
+        if isinstance(message, (str, bytes, bytearray)):
+            try:
+                message = json.loads(message)
+            except Exception:
+                return []
+
         if not isinstance(message, Mapping):
             return []
 
         method = message.get("method")
 
-        if method == "logsSubscription":
+        # Subscription confirmation — capture the subscription ID
+        if method == "logsSubscribe":
             params = message.get("params")
-            if not isinstance(params, Mapping):
-                return []
-
-            result = params.get("result")
-            if isinstance(result, Mapping):
-                subscription_id = result.get("subscription")
-                if subscription_id is not None:
-                    self._subscription_id = str(subscription_id)
-
+            if isinstance(params, Mapping):
+                sub_id = params.get("result")
+                if sub_id is not None:
+                    self._subscription_id = str(sub_id)
             return []
 
         if method != "logsNotification":
-            return []
-
-        if self._subscription_id is None:
             return []
 
         params = message.get("params")
         if not isinstance(params, Mapping):
             return []
 
+        # Optional strict subscription ID check
         notification_subscription = params.get("subscription")
-        if str(notification_subscription) != self._subscription_id:
+        if (
+            self._subscription_id is not None
+            and notification_subscription is not None
+            and str(notification_subscription) != self._subscription_id
+        ):
             return []
 
         result = params.get("result")
         if not isinstance(result, Mapping):
             return []
 
-        log_message = result.get("logMessage")
-        if not isinstance(log_message, str) or not log_message:
+        # logsSubscribe format: result.value.logs (list) + result.value.signature
+        value = result.get("value")
+        if not isinstance(value, Mapping):
             return []
 
+        logs = value.get("logs")
+        if not isinstance(logs, list) or not logs:
+            return []
+
+        signature = value.get("signature", "")
+        slot_raw = result.get("context", {}).get("slot")
         try:
-            slot = int(result.get("slot")) if result.get("slot") is not None else 0
+            slot = int(slot_raw) if slot_raw is not None else 0
         except (TypeError, ValueError):
             slot = 0
 
         try:
             decoded_events = sol_parser.parse_logs_only(
-                [log_message],
-                program_id=PUMP_FUN_PROGRAM_ID,
+                logs,
+                signature,
+                slot,
+                None,
             )
         except Exception as exc:
-            logger.warning("Failed to parse Pump.fun log message: %s", exc)
+            logger.warning("parse_logs_only failed: %s", exc, exc_info=True)
             return []
+
 
         events = self._iter_decoded_events(decoded_events)
         new_pairs: List[NewPairEvent] = []
 
         for event in events:
-            parsed = self._extract_pump_fun_create(
-                event,
-                slot=slot,
-            )
+            parsed = self._extract_pump_fun_create(event, slot=slot)
             if parsed is not None:
                 new_pairs.append(parsed)
 
         return new_pairs
+
 
     @staticmethod
     def _iter_decoded_events(decoded_events: Any) -> List[Any]:
@@ -260,10 +273,31 @@ class SolanaTokenScraper:
             "type",
         )
 
-        if str(event_type) != "PumpFunCreate":
+        # event_type is an Enum — compare its value, not its repr
+        if hasattr(event_type, "value"):
+            event_type_value = str(event_type.value)
+        else:
+            event_type_value = str(event_type).rsplit(".", 1)[-1]
+
+        if event_type_value != "PumpFunCreate":
             return None
 
+        # TEMP: dump the first PumpFunCreate event structure
+        if not getattr(cls, "_dumped_once", False):
+            cls._dumped_once = True
+            logger.warning("DUMP PumpFunCreate event:")
+            logger.warning("  dir: %s", [a for a in dir(event) if not a.startswith("_")])
+            data_field = getattr(event, "data", None)
+            if isinstance(data_field, dict):
+                logger.warning("  data keys: %s", list(data_field.keys()))
+                for k, v in data_field.items():
+                    logger.warning("    %s = %r", k, v)
+
+        # PumpFunCreate puts all fields inside event.data (a PumpFunCreateEvent
+        # dataclass), not directly on the DexEvent wrapper.
         args = cls._lookup(event, "args", "decoded_args")
+        if args is None:
+            args = cls._lookup(event, "data")
         source = args if args is not None else event
 
         mint = cls._lookup(
@@ -319,9 +353,11 @@ class SolanaTokenScraper:
             token_address=mint,
             pair_address=bonding_curve,
             dex="pumpfun",
-            quote_symbol=symbol,
+            quote_symbol="SOL",
             block_number=slot,
+            deployer=deployer,
         )
+           
 
     @staticmethod
     def _lookup(source: Any, *names: str) -> Any:
