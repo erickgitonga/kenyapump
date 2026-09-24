@@ -21,7 +21,7 @@ class ChainId(str, Enum):
     
     # Placeholders for future modules you mentioned you'll add next.
   
-    # SOLANA = "solana"
+    SOLANA = "solana"
     # ARBITRUM = "arbitrum"
     # BSC = "bsc"
 
