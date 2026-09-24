@@ -3,7 +3,9 @@ web3>=7.0
 aiohttp
 python-dotenv
 
-# Solana (when you add it)
+# Solana
+pytest
+pytest-asyncio
 sol-parser-sdk-python==0.5.8
 solana
 solders
@@ -12,6 +14,3 @@ grpcio-tools
 protobuf
 base58
 
-# Testing
-pytest
-pytest-asyncio
