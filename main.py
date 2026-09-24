@@ -4,7 +4,7 @@ import logging
 
 # === Core ===
 from core.chain_router import ChainRouter
-from core.models import ChainId
+from core.models import TokenInfo, ChainId
 from config.settings import BotConfig
 from chains.ethereum import EthereumAdapter
 
@@ -12,6 +12,7 @@ from chains.ethereum import EthereumAdapter
 from data.dexscreener import DexscreenerClient
 from data.geckoterminal import GeckoTerminalClient
 from data.scraper import TokenScraper
+from data.solana_scraper import SolanaTokenScraper
 from ai.honeypot import GoPlusClient, HoneypotDetector
 from ai.quick_screen import QuickScreen
 from notifications.telegram import TelegramNotifier
@@ -43,6 +44,24 @@ async def _wrap_scraper_task(name: str, coro):
     except Exception as exc:
         log.exception("[%s] scraper crashed: %s", name, exc)
         raise
+
+
+def _solana_event_to_token_info(event) -> TokenInfo:
+    """Convert a Solana NewPairEvent into a chain-agnostic TokenInfo."""
+    return TokenInfo(
+        chain=ChainId.SOLANA,
+        address=event.token_address,
+        symbol=event.symbol or "UNKNOWN",
+        decimals=6,   # Pump.fun SPL tokens use 6 decimals
+        name=event.name,
+        metadata={
+            "pair_address": event.pair_address,
+            "dex": event.dex,
+            "paired_with": event.quote_symbol,
+            "discovered_at_block": event.block_number,
+            "deployer": event.deployer,
+        },
+    )
 
 
 async def main():
@@ -99,6 +118,7 @@ async def main():
         config=config.scraper,
         min_liquidity_usd=0.0,
     )
+    solana_scraper = SolanaTokenScraper()
 
     # Initialize screener + honeypot detector once, reuse across all tokens
     goplus = GoPlusClient()
@@ -276,6 +296,13 @@ async def main():
     # ─────────────────────────────────────────────
     # 4. MAIN LOOP — one scraper task per chain
     # ─────────────────────────────────────────────
+    # Solana bridge: convert NewPairEvent -> TokenInfo before shared handler
+    async def solana_on_tokens_found(events):
+        if not events:
+            return
+        token_infos = [_solana_event_to_token_info(e) for e in events]
+        await on_tokens_found(token_infos)
+
     scraper_tasks = []
 
     # Ethereum scraper
@@ -315,6 +342,16 @@ async def main():
             _wrap_scraper_task(
                 'base',
                 base_scraper.run_forever(on_tokens_found=on_tokens_found),
+            )
+        ))
+
+    # Solana scraper (Pump.fun only for v1)
+    if config.scraper.mode == "websocket":
+        log.info("Starting Solana scraper (WebSocket mode, Pump.fun)")
+        scraper_tasks.append(asyncio.create_task(
+            _wrap_scraper_task(
+                'solana',
+                solana_scraper.run_forever(on_tokens_found=solana_on_tokens_found),
             )
         ))
 

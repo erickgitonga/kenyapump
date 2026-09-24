@@ -112,6 +112,8 @@ class NewPairEvent:
     quote_symbol: str
     block_number: int
     deployer: Optional[str] = None
+    name: Optional[str] = None
+    symbol: Optional[str] = None
 
 
 class TokenScraper:
@@ -511,7 +513,10 @@ class TokenScraper:
                 quote_symbol=quote_symbol,
                 block_number=block_number,
             )
-        except (KeyError, IndexError, ValueError) as exc:
+        except Exception as exc:
+            # eth_abi can throw NonEmptyPaddingBytes / DecodingError for
+            # malformed logs (spam contracts emit garbage topics).
+            # Broad catch here prevents one bad log from killing the scraper.
             log.warning("Failed to parse %s factory log: %s", dex_label, exc)
             return None
 

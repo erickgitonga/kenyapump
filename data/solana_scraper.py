@@ -356,6 +356,8 @@ class SolanaTokenScraper:
             quote_symbol="SOL",
             block_number=slot,
             deployer=deployer,
+            name=name,
+            symbol=symbol,
         )
            
 

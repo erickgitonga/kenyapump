@@ -177,6 +177,17 @@ class HoneypotDetector:
         — GoPlus data alone still produces an assessment, just with lower
         confidence.
         """
+        # Chains GoPlus does not support return a neutral UNKNOWN verdict
+        if chain not in _CHAIN_ID_MAP:
+            return HoneypotAssessment(
+                token_address=token_address,
+                risk_level=RiskLevel.UNKNOWN,
+                risk_score=50,
+                flags=[f"GoPlus does not support {chain.value}"],
+                data_sources=[],
+                confidence="none",
+            )
+
         goplus_data: Optional[Dict[str, Any]] = None
         data_sources: List[str] = []
 
