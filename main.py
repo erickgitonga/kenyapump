@@ -17,6 +17,7 @@ from ai.quick_screen import QuickScreen
 from notifications.telegram import TelegramNotifier
 from intelligence.reputation import ReputationStore
 from chains.base import BaseAdapter
+from chains.solana_adapter import SolanaAdapter
 from config.settings import BotConfig
 
 
@@ -59,6 +60,7 @@ async def main():
     router = ChainRouter()
     router.register(EthereumAdapter(config.ethereum))
     router.register(BaseAdapter(config.base)) 
+    router.register(SolanaAdapter())
     log.info(f"Chains registered: {router.registered_chains()}")
     
 

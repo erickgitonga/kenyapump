@@ -36,6 +36,7 @@ BASE_URL = "https://api.dexscreener.com"
 _CHAIN_ID_MAP: Dict[ChainId, str] = {
     ChainId.ETHEREUM: "ethereum",
     ChainId.BASE: "base",
+    ChainId.SOLANA: "solana",
 }
 
 
