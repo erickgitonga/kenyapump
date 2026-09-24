@@ -14,3 +14,8 @@ diag*.py
 probe_*.py
 .vscode/
 .idea/
+.aider*
+*.zip
+*.png
+*.jpg
+*.jpeg

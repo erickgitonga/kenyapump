@@ -62,6 +62,7 @@ class QuickVerdict:
     unique_receivers: int = 0
     largest_receiver_pct: Optional[Decimal] = None
     initial_minter_pct: Optional[Decimal] = None
+    deployer_address: Optional[str] = None
     bundle_detected: bool = False
     pool_like_transfer_seen: bool = False
 
@@ -92,6 +93,13 @@ class QuickScreen:
             *(a.lower() for a in eth_adapter.config.known_quote_assets),
         }
 
+    # Tokens older than this many blocks since their launch block get
+    # skipped — quick screen is calibrated for fresh memecoin launches,
+    # not mature tokens (which will falsely show 1 holder because the
+    # scan window only covers the initial mint).
+    MAX_AGE_BLOCKS_BASE = 2000      # ~1 hour at 2s/block
+    MAX_AGE_BLOCKS_ETH = 500        # ~1.5 hours at 12s/block
+
     async def check(
         self,
         token_address: str,
@@ -102,6 +110,23 @@ class QuickScreen:
         v = QuickVerdict(chain=self._chain, token_address=token_address)
 
         try:
+            # Age gate — skip mature tokens entirely
+            try:
+                latest = await self._eth.get_latest_block_number()
+                age = latest - launch_block
+                max_age = (self.MAX_AGE_BLOCKS_BASE
+                           if self._chain == ChainId.BASE
+                           else self.MAX_AGE_BLOCKS_ETH)
+                if age > max_age:
+                    v.verdict = "WATCH"
+                    v.reason = f"token is {age} blocks old (> {max_age}) — not a fresh launch"
+                    v.flags.append("mature_token_skip")
+                    v.latency_ms = (time.monotonic() - start) * 1000
+                    return v
+            except Exception:
+                pass  # if we can't get age, continue with scan
+
+
             # ─── 1. Total supply readable? ───────────────────────────
             supply_raw, decimals = await self._read_supply_decimals(token_address)
             if supply_raw == 0:
@@ -194,6 +219,7 @@ class QuickScreen:
             if initial_minter and initial_minter in balances and supply_raw > 0:
                 initial_minter_pct = Decimal(balances[initial_minter]) / Decimal(supply_raw)
             v.initial_minter_pct = initial_minter_pct
+            v.deployer_address = initial_minter
 
             non_minter_holders = {
                 a: b for a, b in holders.items() if a != initial_minter
