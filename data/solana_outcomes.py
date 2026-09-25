@@ -27,6 +27,34 @@ from ai.honeypot import HoneypotDetector
 
 log = logging.getLogger("kenyapump.data.solana_outcomes")
 
+def _sqlite_native(v):
+    """Convert Decimal / enum / other non-SQLite types to primitives."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return v
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bytes):
+        return v
+    # Decimal, enum, or anything else with a value attribute
+    if hasattr(v, "value"):
+        inner = v.value
+        return _sqlite_native(inner)
+    try:
+        from decimal import Decimal
+        if isinstance(v, Decimal):
+            return float(v)
+    except ImportError:
+        pass
+    return float(v)
+
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────
@@ -341,7 +369,7 @@ class OutcomeTracker:
                     await self._store_snapshot(token_addr, snapshot, next_idx)
                     # Update pending: advance to next interval
                     new_idx = next_idx + 1
-                    new_peak = max(peak_price or 0, snapshot.price_usd or 0) if peak_price is not None else snapshot.price_usd
+                    new_peak = max(peak_price or 0, _sqlite_native(snapshot.price_usd) or 0) if peak_price is not None else _sqlite_native(snapshot.price_usd)
                     await self._db.execute(
                         """
                         UPDATE pending
@@ -520,10 +548,10 @@ class OutcomeTracker:
                 token_id,
                 snapshot.block_number,
                 snapshot.timestamp,
-                snapshot.liquidity_usd,
-                snapshot.price_usd,
+                _sqlite_native(snapshot.liquidity_usd),
+                _sqlite_native(snapshot.price_usd),
                 snapshot.holder_count,
-                snapshot.top_holder_pct,
+                _sqlite_native(snapshot.top_holder_pct),
                 snapshot.status,
             ),
         )
@@ -545,8 +573,8 @@ class OutcomeTracker:
                 snapshot.block_number,
                 snapshot.timestamp,
                 snapshot.status,
-                snapshot.price_usd or 0,
-                snapshot.price_usd or 0,
+                _sqlite_native(snapshot.price_usd) or 0,
+                _sqlite_native(snapshot.price_usd) or 0,
                 token_id,
             ),
         )
@@ -554,9 +582,9 @@ class OutcomeTracker:
         log.info(
             "[outcome] Snapshot stored for %s: liq=$%s price=$%s holders=%d top=%.1f%% status=%s",
             token_addr[:12],
-            snapshot.liquidity_usd,
-            snapshot.price_usd,
+            _sqlite_native(snapshot.liquidity_usd),
+            _sqlite_native(snapshot.price_usd),
             snapshot.holder_count,
-            snapshot.top_holder_pct * 100,
+            _sqlite_native(snapshot.top_holder_pct) * 100,
             snapshot.status,
         )

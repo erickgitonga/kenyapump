@@ -13,6 +13,7 @@ from data.dexscreener import DexscreenerClient
 from data.geckoterminal import GeckoTerminalClient
 from data.scraper import TokenScraper
 from data.solana_scraper import SolanaTokenScraper
+from data.solana_outcomes import OutcomeTracker
 from ai.honeypot import GoPlusClient, HoneypotDetector
 from ai.quick_screen import QuickScreen
 from notifications.telegram import TelegramNotifier
@@ -125,6 +126,13 @@ async def main():
     honeypot_detector = HoneypotDetector(goplus)
     notifier = TelegramNotifier()
     reputation = ReputationStore()
+    import os as _os
+    outcome_tracker = OutcomeTracker(
+        dexscreener=dexscreener,
+        honeypot_detector=honeypot_detector,
+        solana_rpc_url=_os.getenv("SOLANA_RPC_URL", ""),
+    )
+    await outcome_tracker.initialize()
     # QuickScreen needs the chain adapter — build one per chain on demand
     _quick_screens = {}
 
@@ -186,6 +194,7 @@ async def main():
                         # Solana has no EVM-style Transfer scan — go straight
                         # to getTokenLargestAccounts via the holder recorder.
                         await _record_solana_holders(t, chain_label, launch_block)
+                        await outcome_tracker.record_detection(t, launch_block)
                         qv = None
                     else:
                         qs = _get_quick_screen(t.chain)
@@ -258,7 +267,7 @@ async def main():
                             f"Top: {qv.largest_receiver_pct:.1%}\n"
                             f"<i>{qv.reason}</i>"
                         )
-                    else:
+                    elif qv:
                         # Wallet tracker — Solana gets its own path
                         if t.chain == ChainId.SOLANA:
                             await _record_solana_holders(t, chain_label, launch_block)
@@ -401,6 +410,14 @@ async def main():
             )
         ))
 
+    # Outcome tracker — snapshots every sampled Solana token
+    scraper_tasks.append(asyncio.create_task(
+        _wrap_scraper_task(
+            'outcomes',
+            outcome_tracker.run_forever(),
+        )
+    ))
+
     # Send startup notification
     await notifier.startup(
         chains=[c.value for c in router.registered_chains()],
@@ -420,6 +437,7 @@ async def main():
         log.info("Cleaning up...")
         for s in (eth_scraper, base_scraper):
             s.stop()
+        outcome_tracker.stop()
         for task in scraper_tasks:
             task.cancel()
         for task in scraper_tasks:
@@ -427,6 +445,7 @@ async def main():
                 await task
             except asyncio.CancelledError:
                 pass
+        await outcome_tracker.close()
         await reputation.close()
         await notifier.close()
         await goplus.close()

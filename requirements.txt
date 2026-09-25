@@ -14,3 +14,4 @@ grpcio-tools
 protobuf
 base58
 
+aiosqlite
