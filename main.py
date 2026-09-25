@@ -134,6 +134,40 @@ async def main():
             _quick_screens[chain] = QuickScreen(adapter)
         return _quick_screens[chain]
 
+    async def _record_solana_holders(token, chain_label, launch_block):
+        """Resolve top holders for a Solana mint and record to reputation."""
+        try:
+            from data.solana_holders import get_solana_top_holders
+            import os as _os
+            rpc_url = _os.getenv("SOLANA_RPC_URL")
+            if not rpc_url:
+                log.warning("[solana-holders] SOLANA_RPC_URL not set")
+                return
+            # Do NOT exclude the bonding curve — recording it IS the signal.
+            # Fresh Pump.fun tokens have only the curve as holder; that's
+            # "pre-buy state" and it's useful for reputation tracking.
+            holders = await get_solana_top_holders(
+                rpc_url=rpc_url,
+                mint_address=token.address,
+                top_n=5,
+                exclude=None,
+            )
+            if not holders:
+                log.debug(f"[solana-holders] {token.symbol}: no holders yet")
+                return
+            log.info(f"[solana-holders] {token.symbol}: recording {len(holders)} wallets")
+            for h in holders[:5]:
+                await reputation.record_edge(
+                    wallet_address=h.wallet,
+                    token_address=token.address,
+                    token_symbol=token.symbol,
+                    chain=chain_label,
+                    role="top_holder",
+                    block_number=launch_block,
+                )
+        except Exception as exc:
+            log.warning(f"Solana holder recording failed for {token.symbol}: {exc}")
+
     async def on_tokens_found(tokens):
         for t in tokens:
             chain_label = t.chain.value if hasattr(t, "chain") else "?"
@@ -148,9 +182,15 @@ async def main():
             try:
                 launch_block = int(t.metadata.get("discovered_at_block", 0))
                 if launch_block > 0:
-                    qs = _get_quick_screen(t.chain)
-                    qv = await qs.check(t.address, launch_block)
-                    if qv.verdict == "REJECT":
+                    if t.chain == ChainId.SOLANA:
+                        # Solana has no EVM-style Transfer scan — go straight
+                        # to getTokenLargestAccounts via the holder recorder.
+                        await _record_solana_holders(t, chain_label, launch_block)
+                        qv = None
+                    else:
+                        qs = _get_quick_screen(t.chain)
+                        qv = await qs.check(t.address, launch_block)
+                    if qv and qv.verdict == "REJECT":
                         log.warning(
                             f"[REJECT] QUICK REJECT [{chain_label}]: {base_msg} | "
                             f"({qv.latency_ms:.0f}ms) {qv.reason}"
@@ -169,27 +209,30 @@ async def main():
                             except Exception as e:
                                 log.debug(f"reputation record failed: {e}")
                         continue  # skip honeypot + deep analysis
-                    elif qv.verdict == "WATCH":
-                        # Wallet tracker integration for WATCH
-                        try:
-                            from data.wallet_tracker import get_top_holders
-                            holders = await get_top_holders(
-                                adapter=qs._eth,
-                                token_address=t.address,
-                                launch_block=launch_block,
-                                top_n=5,
-                            )
-                            for h in holders:
-                                await reputation.record_edge(
-                                    wallet_address=h.wallet,
+                    elif qv and qv.verdict == "WATCH":
+                        # Wallet tracker — Solana gets its own path
+                        if t.chain == ChainId.SOLANA:
+                            await _record_solana_holders(t, chain_label, launch_block)
+                        elif qv:
+                            try:
+                                from data.wallet_tracker import get_top_holders
+                                holders = await get_top_holders(
+                                    adapter=qs._eth,
                                     token_address=t.address,
-                                    token_symbol=t.symbol,
-                                    chain=chain_label,
-                                    role="top_holder",
-                                    block_number=launch_block,
+                                    launch_block=launch_block,
+                                    top_n=5,
                                 )
-                        except Exception as e:
-                            log.warning(f"Wallet tracker failed for {t.symbol}: {e}")
+                                for h in holders:
+                                    await reputation.record_edge(
+                                        wallet_address=h.wallet,
+                                        token_address=t.address,
+                                        token_symbol=t.symbol,
+                                        chain=chain_label,
+                                        role="top_holder",
+                                        block_number=launch_block,
+                                    )
+                            except Exception as e:
+                                log.warning(f"Wallet tracker failed for {t.symbol}: {e}")
 
                         log.warning(
                             f"[WATCH] QUICK WATCH [{chain_label}]: {base_msg} | "
@@ -216,26 +259,29 @@ async def main():
                             f"<i>{qv.reason}</i>"
                         )
                     else:
-                        # Wallet tracker integration for PASS
-                        try:
-                            from data.wallet_tracker import get_top_holders
-                            holders = await get_top_holders(
-                                adapter=qs._eth,
-                                token_address=t.address,
-                                launch_block=launch_block,
-                                top_n=5,
-                            )
-                            for h in holders:
-                                await reputation.record_edge(
-                                    wallet_address=h.wallet,
+                        # Wallet tracker — Solana gets its own path
+                        if t.chain == ChainId.SOLANA:
+                            await _record_solana_holders(t, chain_label, launch_block)
+                        else:
+                            try:
+                                from data.wallet_tracker import get_top_holders
+                                holders = await get_top_holders(
+                                    adapter=qs._eth,
                                     token_address=t.address,
-                                    token_symbol=t.symbol,
-                                    chain=chain_label,
-                                    role="top_holder",
-                                    block_number=launch_block,
+                                    launch_block=launch_block,
+                                    top_n=5,
                                 )
-                        except Exception as e:
-                            log.warning(f"Wallet tracker failed for {t.symbol}: {e}")
+                                for h in holders:
+                                    await reputation.record_edge(
+                                        wallet_address=h.wallet,
+                                        token_address=t.address,
+                                        token_symbol=t.symbol,
+                                        chain=chain_label,
+                                        role="top_holder",
+                                        block_number=launch_block,
+                                    )
+                            except Exception as e:
+                                log.warning(f"Wallet tracker failed for {t.symbol}: {e}")
 
                         log.info(
                             f"[PASS] QUICK PASS [{chain_label}]: {base_msg} | "
@@ -256,7 +302,7 @@ async def main():
                     # launch_block == 0, skip quick screen and wallet tracker
                     pass
             except Exception as exc:
-                log.debug(f"quick_screen failed for {t.symbol}: {exc}")
+                log.warning(f"quick_screen FAILED for {t.symbol} [{t.chain.value}]: {exc}", exc_info=True)
 
             # ─── Layer 2: Honeypot / holder / safety check ───────────
             try:

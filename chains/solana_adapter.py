@@ -81,7 +81,8 @@ class SolanaAdapter(BaseChainAdapter):
         try:
             if not self._rpc_client:
                 await self.connect()
-            slot = await self._rpc_client.get_slot()
+            slot_resp = await self._rpc_client.get_slot()
+            slot = slot_resp.value if hasattr(slot_resp, "value") else int(slot_resp)
             latency_ms = (time.monotonic() - start) * 1000
             return ChainHealthStatus(
                 chain=self.chain_id,
@@ -123,7 +124,8 @@ class SolanaAdapter(BaseChainAdapter):
         """Get the latest slot number."""
         if not self._rpc_client:
             await self.connect()
-        return await self._rpc_client.get_slot()
+        slot_resp = await self._rpc_client.get_slot()
+        return slot_resp.value if hasattr(slot_resp, "value") else int(slot_resp)
 
     async def get_logs(
         self,
@@ -149,6 +151,15 @@ class SolanaAdapter(BaseChainAdapter):
         except Exception as exc:
             log.error("Failed to get native balance for %s: %s", address, exc)
             raise ChainConnectionError(f"Failed to get native balance: {exc}") from exc
+
+    async def get_top_holders(self, mint_address: str, top_n: int = 5):
+        """Return top N holder wallets for a Solana SPL mint."""
+        from data.solana_holders import get_solana_top_holders
+        return await get_solana_top_holders(
+            rpc_url=self.rpc_url,
+            mint_address=mint_address,
+            top_n=top_n,
+        )
 
     # --- Stubbed methods from BaseChainAdapter (not implemented in this stub) ---
 
