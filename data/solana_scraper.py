@@ -87,7 +87,6 @@ class SolanaTokenScraper:
                     ping_task = asyncio.create_task(self._keepalive(websocket))
 
                     async for message in websocket:
-                        logger.info("RAW WS: %s", str(message)[:200])
                         if self._stopped:
                             break
 
