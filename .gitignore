@@ -19,3 +19,5 @@ probe_*.py
 *.png
 *.jpg
 *.jpeg
+logs/
+*.log

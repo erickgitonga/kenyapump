@@ -63,7 +63,7 @@ class SolanaAdapter(BaseChainAdapter):
             self._rpc_client = AsyncClient(self.rpc_url)
             # Verify connection by fetching latest slot
             await self._rpc_client.get_slot()
-            log.info("SolanaAdapter connected (rpc_url=%s)", self.rpc_url)
+            log.info("SolanaAdapter connected (host=%s)", __import__("urllib.parse", fromlist=["urlparse"]).urlparse(self.rpc_url).netloc)
         except Exception as exc:
             log.error("Failed to connect to Solana RPC: %s", exc)
             raise ChainConnectionError(f"Solana RPC connection failed: {exc}") from exc
