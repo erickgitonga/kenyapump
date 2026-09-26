@@ -127,6 +127,9 @@ class OutcomeTracker:
         self._dex = dexscreener
         self._honeypot = honeypot_detector
         self._solana_rpc_url = solana_rpc_url
+        if not self._solana_rpc_url:
+            log.error("OutcomeTracker: SOLANA_RPC_URL is empty — holder snapshots will fail")
+
         self._db_path = db_path
         self._sample_rate = sample_rate
         self._poll_interval = poll_interval
@@ -221,7 +224,7 @@ class OutcomeTracker:
         if not self._db:
             raise RuntimeError("OutcomeTracker not initialized")
 
-        token_addr = token.address.lower()
+        token_addr = token.address  # Solana base58 is case-sensitive
         now_ts = int(time.time())
 
         # Check if already in tokens or pending
@@ -500,11 +503,18 @@ class OutcomeTracker:
         if liquidity_usd is not None and liquidity_usd == 0 and price_usd is not None and price_usd == 0:
             return TokenStatus.DEAD
 
-        # Dumped: price dropped >30% from peak
-        if peak_price_usd and price_usd and peak_price_usd > 0:
+        # Dumped requires REAL liquidity — bonding curve price moves aren't dumps.
+        # Also require some actual DEX presence.
+        has_real_liq = liquidity_usd is not None and liquidity_usd > 100
+        if has_real_liq and peak_price_usd and price_usd and peak_price_usd > 0:
             drop_pct = (peak_price_usd - price_usd) / peak_price_usd
             if drop_pct > 0.30:
                 return TokenStatus.DUMPED
+
+        # Rugged: had real liquidity, now has almost none
+        if peak_price_usd and peak_price_usd > 0:
+            # Placeholder — need to check liquidity drop across snapshots
+            pass
 
         # Distributing: top holder % rising significantly (would need previous snapshot)
         # For simplicity, if top_holder_pct > 0.5 (50% held by top holder) and price stable

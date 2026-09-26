@@ -15,6 +15,21 @@ from pathlib import Path
 
 log = logging.getLogger("kenyapump.intelligence.reputation")
 
+def _norm_addr(addr: str, chain: str = "") -> str:
+    """
+    Normalize an address for storage.
+    EVM (hex) is case-insensitive → lowercase.
+    Solana (base58) is case-sensitive → preserve.
+    """
+    if not addr:
+        return addr
+    # Solana addresses are base58, case-sensitive, and don't start with 0x
+    if chain == "solana" or not addr.startswith("0x"):
+        return addr
+    return addr.lower()
+
+
+
 DEFAULT_DB = "data/reputation.db"
 
 
@@ -84,13 +99,13 @@ class ReputationStore:
             INSERT INTO wallets (address, first_seen, role, last_seen)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(address) DO UPDATE SET last_seen = excluded.last_seen
-        """, (wallet_address.lower(), now, role, now))
+        """, (_norm_addr(wallet_address, chain), now, role, now))
         cur.execute("""
             INSERT OR IGNORE INTO wallet_token_edges
                 (wallet_address, token_address, token_symbol, chain,
                  role, block_number, seen_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (wallet_address.lower(), token_address.lower(),
+        """, (_norm_addr(wallet_address, chain), _norm_addr(token_address, chain),
               token_symbol, chain, role, block_number, now))
         self._conn.commit()
 
@@ -105,7 +120,7 @@ class ReputationStore:
             FROM wallet_token_edges
             WHERE wallet_address = ? AND role = 'deployer'
             ORDER BY seen_at DESC
-        """, (address.lower(),))
+        """, (_norm_addr(address, "ethereum"),))
         return [dict(r) for r in cur.fetchall()]
 
     async def is_known_rugger(self, deployer_address: str) -> bool:
