@@ -324,9 +324,10 @@ class OutcomeTracker:
         if not self._db:
             return
 
+        log.info("[outcome] Loop tick")
+
         now_ts = int(time.time())
 
-        # Get pending tokens that are sampled and have a due snapshot
         async with self._db.execute(
             """
             SELECT id, token_address, symbol, chain, first_seen_block,
@@ -334,7 +335,7 @@ class OutcomeTracker:
                    peak_price_usd
             FROM pending
             WHERE sampled = 1
-            ORDER BY next_snapshot_idx
+            ORDER BY first_seen_timestamp
             """
         ) as cur:
             rows = await cur.fetchall()
@@ -344,18 +345,14 @@ class OutcomeTracker:
              first_seen_ts, next_idx, attempts, peak_price) = row
 
             if next_idx >= len(SNAPSHOT_INTERVALS):
-                # All snapshots done - remove from pending
                 await self._db.execute("DELETE FROM pending WHERE id = ?", (pid,))
                 await self._db.commit()
                 continue
 
             target_ts = first_seen_ts + SNAPSHOT_INTERVALS[next_idx]
             if now_ts < target_ts:
-                # Not due yet - since ordered by next_snapshot_idx, we can break
-                # but wait, next_idx could be different per token. Continue checking.
                 continue
 
-            # Due for snapshot
             log.info(
                 "[outcome] Taking snapshot %d/3 for %s (%s) at T+%ds",
                 next_idx + 1, symbol, token_addr[:12], SNAPSHOT_INTERVALS[next_idx]
@@ -367,41 +364,32 @@ class OutcomeTracker:
                 )
                 if snapshot:
                     await self._store_snapshot(token_addr, snapshot, next_idx)
-                    # Update pending: advance to next interval
                     new_idx = next_idx + 1
-                    new_peak = max(peak_price or 0, _sqlite_native(snapshot.price_usd) or 0) if peak_price is not None else _sqlite_native(snapshot.price_usd)
+                    if peak_price is not None:
+                        new_peak = max(peak_price, _sqlite_native(snapshot.price_usd) or 0)
+                    else:
+                        new_peak = _sqlite_native(snapshot.price_usd)
                     await self._db.execute(
-                        """
-                        UPDATE pending
-                        SET next_snapshot_idx = ?, attempts = 0, peak_price_usd = ?
-                        WHERE id = ?
-                        """,
+                        "UPDATE pending SET next_snapshot_idx = ?, attempts = 0, peak_price_usd = ? WHERE id = ?",
                         (new_idx, new_peak, pid),
                     )
                 else:
-                    # Snapshot failed - increment attempts
                     new_attempts = attempts + 1
-                    if new_attempts >= 3:
-                        log.warning(
-                            "[outcome] Giving up on %s after %d failed attempts",
-                            token_addr[:12], new_attempts
-                        )
-                        await self._db.execute("DELETE FROM pending WHERE id = ?", (pid,))
-                    else:
-                        await self._db.execute(
-                            "UPDATE pending SET attempts = ? WHERE id = ?",
-                            (new_attempts, pid),
-                        )
-            except Exception as exc:  # noqa: BLE001
-                log.exception("Failed to process snapshot for %s: %s", token_addr[:12], exc)
-                new_attempts = attempts + 1
-                if new_attempts >= 3:
-                    await self._db.execute("DELETE FROM pending WHERE id = ?", (pid,))
-                else:
                     await self._db.execute(
                         "UPDATE pending SET attempts = ? WHERE id = ?",
                         (new_attempts, pid),
                     )
+                    log.warning(
+                        "[outcome] Snapshot failed for %s, attempt %d",
+                        token_addr[:12], new_attempts,
+                    )
+            except Exception as exc:
+                log.exception("Failed to process snapshot for %s: %s", token_addr[:12], exc)
+                new_attempts = attempts + 1
+                await self._db.execute(
+                    "UPDATE pending SET attempts = ? WHERE id = ?",
+                    (new_attempts, pid),
+                )
 
             await self._db.commit()
 
@@ -415,7 +403,7 @@ class OutcomeTracker:
     ) -> Optional[Snapshot]:
         """Fetch all data for a single snapshot."""
         now_ts = int(time.time())
-        block_number = 0  # Solana doesn't have block numbers in same way; use timestamp
+        block_number = now_ts  # use timestamp so each snapshot is unique
 
         # 1. Price & liquidity from Dexscreener
         liquidity_usd = None
@@ -498,6 +486,12 @@ class OutcomeTracker:
         - distributing: top_holder_pct rising >10% over previous snapshot AND price stable/up
         - alive: otherwise
         """
+        # Normalize types — DexScreener returns Decimal, we use float elsewhere
+        liquidity_usd = float(liquidity_usd) if liquidity_usd is not None else None
+        price_usd = float(price_usd) if price_usd is not None else None
+        peak_price_usd = float(peak_price_usd) if peak_price_usd is not None else None
+        top_holder_pct = float(top_holder_pct) if top_holder_pct is not None else 0.0
+
         # For first snapshot (90s), default to alive unless rugged
         if interval_idx == 0:
             return TokenStatus.ALIVE

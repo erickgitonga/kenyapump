@@ -43,8 +43,9 @@ async def _wrap_scraper_task(name: str, coro):
         log.info("[%s] scraper cancelled", name)
         raise
     except Exception as exc:
-        log.exception("[%s] scraper crashed: %s", name, exc)
-        raise
+        log.exception("[%s] scraper crashed (isolated, others continue): %s", name, exc)
+        # Do NOT re-raise — one scraper failure must not kill the whole bot.
+        return
 
 
 def _solana_event_to_token_info(event) -> TokenInfo:
